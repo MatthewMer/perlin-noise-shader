@@ -1,0 +1,129 @@
+// Each #kernel tells which function max compile; you can have many kernels
+#pragma kernel CSMain
+
+#define MAX_OCTAVES 16
+
+// ***** PROTOTYPES *****
+
+float falloff(uint x, uint y);
+float inverse_lerp(float x, float ma, float mi);
+float noise(float2 p);
+float noise_impl(float2 pi0, float2 pf0, float2 pi1, float2 pf1);
+float2 noise_mod289(float2 x);
+float4 noise_permute(float4 x);
+float2 noise_fade(float2 t);
+
+// ***** VARIABLES *****
+
+int size;                                   // map size (width/height)
+float scale;                                // for more realistic output between 1.5 and 3, depends on preference
+int octaves;                                // 5 to 8 should be sufficient
+float persistance;                          // multiplier amplitude (<1 & >0)
+float lacunarity;                           // multiplier frequency (>1)
+float2 octaveOffsets[MAX_OCTAVES];
+
+// out data
+RWBuffer<float> buffer;
+
+// ***** CONNSTANTS *****
+
+const float a = 3;
+const float b = 8; // ==> increase b for tighter falloff at edge of noise map (fixed size)
+
+// ***** KERNELS *****
+
+// generate perlin noise
+[numthreads(8,8,1)]
+void CSMain (uint3 id : SV_DispatchThreadID)
+{    
+    float am = 1, f = 1, z = 0;
+            
+    for (int i = 0; i < octaves; i++)
+    {
+        float2 xy_sample =
+        {
+            (id.x - (size / 2) + octaveOffsets[i].x) / scale * f,
+            (id.y - (size / 2) + octaveOffsets[i].y) / scale * f
+        };
+                
+        float z_ = noise(xy_sample);
+        z += z_ * am;
+                
+        am *= persistance;          // 0 < persistance < 1
+        f *= lacunarity;            // lacunarity > 1
+    }
+
+    z = inverse_lerp(z, -1.0, 1.0);
+
+    // uncomment to generate falloff near edge of noisemap (0.0)
+    //z = z * falloff(id.x, id.y);
+
+    buffer[id.x + id.y * size] = z;
+}
+
+float falloff(uint x, uint y)
+{
+    float x_rel = ((float) x / mapSize) * 2 - 1;
+    float y_rel = ((float) y / mapSize) * 2 - 1;
+
+    float val = max(abs(x_rel), abs(y_rel));
+    
+    return 1.0f - (pow(val, a) / (pow(val, a) + pow(b - b * val, a)));
+}
+
+float inverse_lerp(float x, float mi, float ma)
+{
+    return (x - mi) / (ma - mi);
+}
+
+float noise_impl(float2 pi0, float2 pf0, float2 pi1, float2 pf1)
+{
+    pi0 = noise_mod289(pi0); // To avoid truncation effects in permutation
+    pi1 = noise_mod289(pi1);
+
+    float4 ix = float2(pi0.x, pi1.x).xyxy;
+    float4 iy = float2(pi0.y, pi1.y).xxyy;
+    float4 fx = float2(pf0.x, pf1.x).xyxy;
+    float4 fy = float2(pf0.y, pf1.y).xxyy;
+
+    float4 i = noise_permute(noise_permute(ix) + iy);
+
+    float4 phi = i / 41 * 3.14159265359 * 2;
+    float2 g00 = float2(cos(phi.x), sin(phi.x));
+    float2 g10 = float2(cos(phi.y), sin(phi.y));
+    float2 g01 = float2(cos(phi.z), sin(phi.z));
+    float2 g11 = float2(cos(phi.w), sin(phi.w));
+
+    float n00 = dot(g00, float2(fx.x, fy.x));
+    float n10 = dot(g10, float2(fx.y, fy.y));
+    float n01 = dot(g01, float2(fx.z, fy.z));
+    float n11 = dot(g11, float2(fx.w, fy.w));
+
+    float2 fade_xy = noise_fade(pf0);
+    float2 n_x = lerp(float2(n00, n01), float2(n10, n11), fade_xy.x);
+    float n_xy = lerp(n_x.x, n_x.y, fade_xy.y);
+    return 1.44 * n_xy;
+}
+
+// Classic Perlin noise
+float noise(float2 p)
+{
+    float2 i = floor(p);
+    float2 f = frac(p);
+    return noise_impl(i, f, i + 1, f - 1);
+}
+
+float2 noise_mod289(float2 x)
+{
+    return x - floor(x / 289) * 289;
+}
+
+float4 noise_permute(float4 x)
+{
+    return noise_mod289((x * 34 + 1) * x);
+}
+
+float2 noise_fade(float2 t)
+{
+    return t * t * t * (t * (t * 6 - 15) + 10);
+}
